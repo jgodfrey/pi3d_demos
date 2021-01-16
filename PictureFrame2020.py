@@ -20,6 +20,7 @@ import demo
 import pi3d
 import locale
 import subprocess
+import numpy as np
 
 from pi3d.Texture import MAX_SIZE
 from PIL import Image, ExifTags, ImageFilter # these are needed for getting exif data from images
@@ -138,10 +139,9 @@ def tex_load(pic_num, iFiles, size=None):
     tex = None
   return tex
 
-def tidy_name(path_name):
-    name = os.path.basename(path_name)
-    name = ''.join([c for c in name if c in config.CODEPOINTS])
-    return name
+# --- Sanitize the specified string by removing any chars not found in config.CODEPOINTS
+def sanitize_string(string):
+    return ''.join([c for c in string if c in config.CODEPOINTS])
 
 def check_changes():
   global last_file_change
@@ -287,7 +287,7 @@ if config.USE_MQTT:
           if len(date_to) != 3:
             raise Exception("invalid date format")
         except:
-          date_from = None
+          date_to = None
         reselect = True
       elif message.topic == "frame/time_delay":
         if float_msg > 0.0:
@@ -314,7 +314,7 @@ if config.USE_MQTT:
       elif message.topic == "frame/next":
         refresh = True
       elif message.topic == "frame/subdirectory":
-        subdirectory = msg
+        subdirectory = msg.strip()
         reselect = True
       elif message.topic == "frame/delete":
         f_to_delete = iFiles[pic_num][0]
@@ -413,16 +413,25 @@ sbg = None # slide for foreground
 grid_size = math.ceil(len(config.CODEPOINTS) ** 0.5)
 font = pi3d.Font(config.FONT_FILE, codepoints=config.CODEPOINTS, grid_size=grid_size)
 text = pi3d.PointText(font, CAMERA, max_chars=200, point_size=config.SHOW_TEXT_SZ)
-textblock = pi3d.TextBlock(x=-DISPLAY.width * 0.5 + 50, y=-DISPLAY.height * 0.4,
+textblock = pi3d.TextBlock(x=0, y=-DISPLAY.height // 2 + (config.SHOW_TEXT_SZ // 2) + 20,
                           z=0.1, rot=0.0, char_count=199,
                           text_format="{}".format(" "), size=0.99,
-                          spacing="F", space=0.02, colour=(1.0, 1.0, 1.0, 1.0))
+                          spacing="F", justify=0.5, space=0.02, colour=(1.0, 1.0, 1.0, 1.0))
 text.add_text_block(textblock)
+"""
 back_shader = pi3d.Shader("mat_flat")
 text_bkg = pi3d.Sprite(w=DISPLAY.width, h=90, y=-DISPLAY.height * 0.4 - 20, z=4.0)
 text_bkg.set_shader(back_shader)
 text_bkg.set_material((0, 0, 0))
+"""
 
+bkg_ht = DISPLAY.height // 3
+text_bkg_array = np.zeros((bkg_ht, 1, 4), dtype=np.uint8)
+text_bkg_array[:,:,3] = np.linspace(0, 255, bkg_ht).reshape(-1, 1)
+text_bkg_tex = pi3d.Texture(text_bkg_array, blend=True, free_after_load=True)
+text_bkg = pi3d.Plane(w=DISPLAY.width, h=bkg_ht, y=-DISPLAY.height // 2 + bkg_ht // 2, z=4.0)
+back_shader = pi3d.Shader("uv_flat")
+text_bkg.set_draw_details(back_shader, [text_bkg_tex])
 
 num_run_through = 0
 while DISPLAY.loop_running():
@@ -449,20 +458,24 @@ while DISPLAY.loop_running():
           nFi = 0
           break
       # set the file name as the description
+      info_strings = []
       if config.SHOW_TEXT > 0 or paused: #was SHOW_TEXT_TM > 0.0
-        txt = ""
-        gap = ""
         if (config.SHOW_TEXT & 1) == 1: # name
-          txt += "{}".format(tidy_name(iFiles[pic_num][0]))
-          gap = " "
+          info_strings.append(sanitize_string(os.path.basename(iFiles[pic_num][0])))
         if (config.SHOW_TEXT & 2) == 2: # date
-          txt += "{}{}".format(gap, iFiles[pic_num][4])
-          gap = " "
+          info_strings.append(iFiles[pic_num][4])
         if config.LOAD_GEOLOC and (config.SHOW_TEXT & 4) == 4: # location
-          txt += "{}{}".format(gap, iFiles[pic_num][5])
+          loc_string = iFiles[pic_num][5].strip()
+          if loc_string:
+            info_strings.append(loc_string)
+        if (config.SHOW_TEXT & 8) == 8: # folder
+          info_strings.append(sanitize_string(os.path.basename(os.path.dirname(iFiles[pic_num][0]))))
         if paused:
-          txt += " PAUSED"
-        textblock.set_text(text_format=txt, wrap=config.TEXT_WIDTH)
+          info_strings.append("PAUSED")
+
+        final_string = " • ".join(info_strings)
+
+        textblock.set_text(text_format=final_string, wrap=config.TEXT_WIDTH)
       else: # could have a NO IMAGES selected and being drawn
         textblock.set_text(text_format="{}".format(" "))
         textblock.colouring.set_colour(alpha=0.0)
